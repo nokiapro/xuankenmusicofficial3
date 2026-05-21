@@ -39,6 +39,10 @@ let autoRefreshInterval = null;
 let isRefreshing = false;
 let lastDataHash = null;
 
+let pendingListenUpdate = false;
+let lastListenFetch = 0;
+const LISTEN_FETCH_INTERVAL = 60000;
+
 function generateDataHash(data) {
     if (!data || !data.length) return null;
     return JSON.stringify(data.map(s => ({ id: s.id, listenCount: s.listenCount })));
@@ -112,17 +116,19 @@ async function checkForUpdates() {
             
             if (addedSongs.length > 0) {
                 addedSongs.forEach(song => {
-                    showNotification('BÀI HÁT MỚI:', `<i class="fa-regular fa-star"></i> ${song.id} <i class="fa-regular fa-star"></i>`, '#4ade80', 'fa-plus-circle');
+                    showNotification('BÀI HÁT MỚI THÊM:', `<i class="fa-regular fa-star"></i> ${song.id} <i class="fa-regular fa-star"></i>`, '#4ade80', 'fa-plus-circle');
                 });
             }
-            console.log("ĐÃ CẬP NHẬT LƯỢT NGHE");
+            
             if (wasPlaying && currentSongId && newIndex !== -1 && !audio.paused) {
-                audio.currentTime = currentTime;
+                if (newIndex !== oldShuffleHistory[oldShuffleHistory.length - 1]) {
+                    audio.currentTime = currentTime;
+                }
             }
         }
         
-        await fetchListenData();
-        console.log("ĐÃ CẬP NHẬT LƯỢT NGHE");
+        await fetchListenDataSilent();
+        
     } catch (error) {
         console.error("LỖI KIỂM TRA CẬP NHẬT:", error);
     } finally {
@@ -130,7 +136,46 @@ async function checkForUpdates() {
     }
 }
 
-function startAutoRefresh(intervalSeconds = 30) {
+async function fetchListenDataSilent() {
+    if (isUpdatingListen) return listenData;
+    
+    const now = Date.now();
+    if (now - lastListenFetch < LISTEN_FETCH_INTERVAL) return listenData;
+    lastListenFetch = now;
+    
+    try {
+        const response = await fetch(`${GOOGLE_SHEET_API}?action=get&t=${Date.now()}`);
+        if (response.ok) {
+            const data = await response.json();
+            let hasChange = false;
+            
+            for (const song of songs) {
+                const newCount = data[song.id] || 0;
+                if (song.listenCount !== newCount) {
+                    song.listenCount = newCount;
+                    listenData[song.id] = newCount;
+                    hasChange = true;
+                }
+            }
+            
+            if (hasChange) {
+                updateListenStatsModal();
+                localStorage.setItem('xuanken_listens', JSON.stringify(listenData));
+            }
+            return listenData;
+        }
+    } catch (error) {
+        console.log('API error, using local data');
+        const saved = localStorage.getItem('xuanken_listens');
+        if (saved) {
+            listenData = JSON.parse(saved);
+            updateListenStatsModal();
+        }
+    }
+    return listenData;
+}
+
+function startAutoRefresh(intervalSeconds = 60) {
     if (autoRefreshInterval) clearInterval(autoRefreshInterval);
     setTimeout(() => checkForUpdates(), 5000);
     autoRefreshInterval = setInterval(checkForUpdates, intervalSeconds * 1000);
@@ -179,7 +224,7 @@ async function loadSongsFromSheet() {
             updateListenStatsModal();
             showToastMsg(`ĐÃ TẢI ${songs.length} BÀI HÁT!`, false);
             
-            startAutoRefresh(30);
+            startAutoRefresh(60);
         } else {
             throw new Error("DỮ LIỆU KHÔNG ĐÚNG ĐỊNH DẠNG");
         }
@@ -210,18 +255,15 @@ function initPlayerAfterLoad() {
         }, 600);
     }
     
-    // BẬT SÁNG ICON XÁO TRỘN MẶC ĐỊNH
     isShuffle = true;
     if (shuffleBtn) {
         shuffleBtn.classList.add('active');
     }
     
     loadSong(index).then(() => {
-        // TỰ ĐỘNG PHÁT NHẠC SAU KHI LOAD XONG
         audio.play().catch(e => console.log("CẦN TƯƠNG TÁC TRƯỚC KHI PHÁT:", e));
     });
     renderPlaylist();
-    fetchListenData();
 }
 
 function getGradientByTheme() {
@@ -335,31 +377,7 @@ function showToastMsg(msg, isListen = false) {
 }
 
 async function fetchListenData() {
-    if (isUpdatingListen) return listenData;
-    try {
-        const response = await fetch(`${GOOGLE_SHEET_API}?action=get&t=${Date.now()}`);
-        if (response.ok) {
-            const data = await response.json();
-            listenData = data;
-            
-            songs.forEach(song => {
-                if (listenData[song.id] !== undefined) {
-                    song.listenCount = listenData[song.id];
-                }
-            });
-            
-            updateListenStatsModal();
-            return listenData;
-        }
-    } catch (error) {
-        console.log('API error, using local data');
-        const saved = localStorage.getItem('xuanken_listens');
-        if (saved) {
-            listenData = JSON.parse(saved);
-            updateListenStatsModal();
-        }
-    }
-    return listenData;
+    return fetchListenDataSilent();
 }
 
 async function incrementListenCount(songId, songName, source = 'normal') {
@@ -416,7 +434,6 @@ function updateListenStatsModal() {
     }
     
     const currentSongId = songs[index]?.id;
-    // GIỮ NGUYÊN THỨ TỰ NHƯ TRONG GOOGLE SHEET (KHÔNG SẮP XẾP)
     const statsHtml = songs.map(song => {
         const count = song.listenCount || 0;
         const isCurrent = (song.id === currentSongId);
@@ -638,7 +655,7 @@ async function fetchLyricWithFallback(lrc1, lrc2) {
         try {
             const res = await fetch(urls[i]);
             if (res.ok) return parseLRC(await res.text());
-        } catch (e) { console.error("Lỗi fetch lyric:", e); }
+        } catch (e) { console.error("LỖI FETCH LYRIC:", e); }
     }
     return [];
 }
@@ -798,7 +815,7 @@ function prevSong() {
 }
 
 function togglePlay() {
-    if (audio.paused) audio.play().catch(e => console.log("Cần tương tác:", e));
+    if (audio.paused) audio.play().catch(e => console.log("CẦN TƯƠNG TÁC:", e));
     else audio.pause();
 }
 
@@ -1247,9 +1264,7 @@ if (listenCountBtn) {
     };
 }
 
-listenInterval = setInterval(fetchListenData, 30000);
 window.addEventListener('beforeunload', () => {
-    if (listenInterval) clearInterval(listenInterval);
     if (autoRefreshInterval) clearInterval(autoRefreshInterval);
 });
 
