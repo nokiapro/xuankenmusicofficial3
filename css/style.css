@@ -426,7 +426,6 @@ body.dark .album-art {
     z-index: 10;
     transition: transform 0.1s ease;
     pointer-events: auto;
-    border-radius: 50%;
 }
 
 .progress-thumb:hover {
