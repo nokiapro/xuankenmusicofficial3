@@ -25,7 +25,7 @@ const playlistOverlay = document.getElementById('playlist');
 const songTitleEl = document.getElementById('current-title');
 const artistNameEl = document.getElementById('current-artist');
 
-const GOOGLE_SHEET_API = 'https://script.google.com/macros/s/AKfycbyzTuObESHfCtx79vY10SHg6ZFX8cBEPxZ_2TUi5SiCakBUbrVLqC4Tg9sQlmRtIaMEIw/exec';
+const GOOGLE_SHEET_API = 'https://script.google.com/macros/s/AKfycbyl8Vx5ZWhhJJlXILIy0wJMpyboPTZ8vj5BncpR6SC5sgUnD_LzhpWjpAQ-Nn0yNLeeOA/exec';
 
 let listenData = {};
 let isUpdatingListen = false;
@@ -33,7 +33,6 @@ let hasRecordedCurrentSong = false;
 let currentSource = 'normal';
 let notificationTimeout = null;
 let isLoadingSongs = true;
-let isUsingFallbackAudio = false;
 
 let autoRefreshInterval = null;
 let isRefreshing = false;
@@ -42,6 +41,8 @@ let lastDataHash = null;
 let pendingListenUpdate = false;
 let lastListenFetch = 0;
 const LISTEN_FETCH_INTERVAL = 60000;
+
+let hasUserInteracted = false;
 
 function generateDataHash(data) {
     if (!data || !data.length) return null;
@@ -101,6 +102,7 @@ async function checkForUpdates() {
                     applyGradientToArtistName();
                 }
                 autoScaleSongTitle();
+                updateArtImage();
             }
             
             if (oldIsShuffle && songs.length === newSongs.length) {
@@ -237,6 +239,14 @@ async function loadSongsFromSheet() {
     }
 }
 
+function updateArtImage() {
+    if (!art || !songs[index]) return;
+    const song = songs[index];
+    const albumArt = song.albumArt || 'https://raw.githubusercontent.com/nokiapro/xuankenofficial/main/logoofficial.png';
+    art.src = albumArt;
+    art.alt = song.artist || "Ca sĩ";
+}
+
 function initPlayerAfterLoad() {
     if (!songs.length) return;
     
@@ -246,13 +256,11 @@ function initPlayerAfterLoad() {
     index = initIdx;
     
     const playerContainer = document.getElementById('player-container');
-    if (playerContainer) playerContainer.style.display = 'flex';
+    if (playerContainer) playerContainer.style.display = 'none';
     
     if (hint) {
-        hint.classList.add('hide');
-        setTimeout(() => {
-            hint.style.display = 'none';
-        }, 600);
+        hint.classList.remove('hide');
+        hint.style.display = 'flex';
     }
     
     isShuffle = true;
@@ -260,10 +268,43 @@ function initPlayerAfterLoad() {
         shuffleBtn.classList.add('active');
     }
     
-    loadSong(index).then(() => {
-        audio.play().catch(e => console.log("CẦN TƯƠNG TÁC TRƯỚC KHI PHÁT:", e));
-    });
+    loadSongInfoOnly(index);
     renderPlaylist();
+}
+
+function loadSongInfoOnly(i) {
+    if (!songs[i]) return;
+    
+    index = i;
+    const song = songs[index];
+    
+    if (songTitleEl) {
+        songTitleEl.innerText = song.name;
+        applyGradientToSongTitle();
+    }
+    if (artistNameEl) {
+        artistNameEl.innerText = song.artist || "ĐANG CẬP NHẬT";
+        applyGradientToArtistName();
+    }
+    
+    updateArtImage();
+    autoScaleSongTitle();
+    
+    const colors = getRandomPastel();
+    document.documentElement.style.setProperty('--bg-color', colors.bg);
+    document.documentElement.style.setProperty('--accent-color', colors.accent);
+    
+    fetchLyricWithFallback(song.lrc1, song.lrc2).then(lyricData => {
+        lyrics = lyricData;
+        if (lyrics.length === 0) {
+            adjustLyricFontSize("BÀI HÁT TẠM CHƯA CÓ LYRIC NHA HIHI");
+        } else {
+            adjustLyricFontSize("NHẤN PLAY ĐỂ NGHE NHẠC");
+        }
+    });
+    
+    renderPlaylist();
+    updateMediaSession();
 }
 
 function getGradientByTheme() {
@@ -622,7 +663,7 @@ function updateMediaSession() {
             title: song.name,
             artist: song.artist || "XuanKen Official",
             album: 'XuanKen Music Collection',
-            artwork: [{ src: 'https://raw.githubusercontent.com/nokiapro/xuankenofficial/main/logoofficial.png', sizes: '512x512', type: 'image/png' }]
+            artwork: [{ src: song.albumArt || 'https://raw.githubusercontent.com/nokiapro/xuankenofficial/main/logoofficial.png', sizes: '512x512', type: 'image/png' }]
         });
         navigator.mediaSession.setActionHandler('play', () => audio.play());
         navigator.mediaSession.setActionHandler('pause', () => audio.pause());
@@ -740,7 +781,6 @@ async function loadSong(i) {
     
     isChanging = true;
     index = i;
-    isUsingFallbackAudio = false;
     const song = songs[index];
     
     if (songTitleEl) {
@@ -752,13 +792,14 @@ async function loadSong(i) {
         applyGradientToArtistName();
     }
     
+    updateArtImage();
     autoScaleSongTitle();
     const colors = getRandomPastel();
     document.documentElement.style.setProperty('--bg-color', colors.bg);
     document.documentElement.style.setProperty('--accent-color', colors.accent);
     
     audio.pause();
-    audio.src = song.audio1;
+    audio.src = song.audio;
     audio.load();
     
     lyrics = [];
@@ -815,25 +856,38 @@ function prevSong() {
 }
 
 function togglePlay() {
-    if (audio.paused) audio.play().catch(e => console.log("CẦN TƯƠNG TÁC:", e));
-    else audio.pause();
+    if (!hasUserInteracted) {
+        hasUserInteracted = true;
+        
+        if (hint) {
+            hint.classList.add('hide');
+            setTimeout(() => {
+                hint.style.display = 'none';
+            }, 600);
+        }
+        
+        const playerContainer = document.getElementById('player-container');
+        if (playerContainer) playerContainer.style.display = 'flex';
+        
+        if (songs[index] && (!audio.src || audio.src !== songs[index].audio)) {
+            loadSong(index);
+            setTimeout(() => {
+                audio.play().catch(e => console.log("LỖI PHÁT:", e));
+            }, 100);
+        }
+        return;
+    }
+    
+    if (audio.paused) {
+        audio.play().catch(e => console.log("LỖI PHÁT:", e));
+    } else {
+        audio.pause();
+    }
 }
 
 audio.onerror = () => {
     if (!songs[index]) return;
-    const song = songs[index];
-    const currentSrc = audio.src;
-    const isUsingAudio1 = !isUsingFallbackAudio && currentSrc === song.audio1;
-    
-    if (isUsingAudio1 && song.audio2 && song.audio2.trim() !== "") {
-        isUsingFallbackAudio = true;
-        showNotification('CHUYỂN LINK DỰ PHÒNG', 'ĐANG THỬ LINK DỰ PHÒNG...', '#ff9800', 'fa-circle-notch');
-        audio.src = song.audio2;
-        audio.load();
-        audio.play().catch(e => console.error("LỖI KHI PHÁT AUDIO2:", e));
-    } else if (isUsingFallbackAudio || !song.audio2 || song.audio2.trim() === "") {
-        showNotification('LỖI:', 'KHÔNG THỂ PHÁT BÀI HÁT!', '#ff4444', 'fa-circle-exclamation');
-    }
+    showNotification('LỖI:', 'KHÔNG THỂ PHÁT BÀI HÁT!', '#ff4444', 'fa-circle-exclamation');
 };
 
 const progressArea = document.getElementById('progress-area');
@@ -910,7 +964,7 @@ audio.ontimeupdate = () => {
         }
     }
     
-    if (cur >= 5 && !hasRecordedCurrentSong && !isUpdatingListen && !isChanging && dur && dur > 5 && songs[index]) {
+    if (cur >= 5 && !hasRecordedCurrentSong && !isUpdatingListen && !isChanging && dur && dur > 5 && songs[index] && hasUserInteracted) {
         hasRecordedCurrentSong = true;
         incrementListenCount(songs[index].id, songs[index].name, currentSource);
     }
@@ -995,13 +1049,18 @@ if (playerContainer) playerContainer.style.display = 'none';
 
 if (hint) {
     hint.onclick = () => {
+        hasUserInteracted = true;
         hint.classList.add('hide');
         setTimeout(() => {
             hint.style.display = 'none';
             if (playerContainer) playerContainer.style.display = 'flex';
         }, 600);
-        if (songs.length > 0) {
-            changeSong(index, 'normal');
+        
+        if (songs.length > 0 && songs[index]) {
+            loadSong(index);
+            setTimeout(() => {
+                audio.play().catch(e => console.log("LỖI PHÁT:", e));
+            }, 100);
         }
     };
 }
