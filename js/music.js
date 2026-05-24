@@ -44,6 +44,55 @@ const LISTEN_FETCH_INTERVAL = 60000;
 
 let hasUserInteracted = false;
 
+let isDataLoading = false;
+let pendingPlayAfterLoad = false;
+
+function showPlayerLoading() {
+    let loadingDiv = document.getElementById('player-loading');
+    if (loadingDiv) return;
+    
+    const playerContainer = document.getElementById('player-container');
+    if (!playerContainer) return;
+    
+    playerContainer.style.position = 'relative';
+    
+    loadingDiv = document.createElement('div');
+    loadingDiv.id = 'player-loading';
+    loadingDiv.style.cssText = `
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--card-bg);
+        backdrop-filter: blur(10px);
+        border-radius: 32px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 200;
+        transition: opacity 0.3s ease;
+    `;
+    loadingDiv.innerHTML = `
+        <div style="width: 50px; height: 50px; border: 3px solid rgba(0,0,0,0.1); border-top: 3px solid var(--accent-color); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 15px;"></div>
+        <div style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: var(--text-secondary);">ĐANG TẢI DỮ LIỆU...</div>
+    `;
+    playerContainer.appendChild(loadingDiv);
+}
+
+function hidePlayerLoading() {
+    const loadingDiv = document.getElementById('player-loading');
+    if (loadingDiv) {
+        loadingDiv.style.opacity = '0';
+        setTimeout(() => {
+            if (loadingDiv && loadingDiv.parentNode) {
+                loadingDiv.parentNode.removeChild(loadingDiv);
+            }
+        }, 300);
+    }
+}
+
 function generateDataHash(data) {
     if (!data || !data.length) return null;
     return JSON.stringify(data.map(s => ({ id: s.id, listenCount: s.listenCount })));
@@ -202,8 +251,6 @@ if (!Array.prototype.findLast) {
 
 async function loadSongsFromSheet() {
     try {
-        showToastMsg("ĐANG TẢI DANH SÁCH BÀI HÁT...", false);
-        
         const response = await fetch(`${GOOGLE_SHEET_API}?action=getSongs&t=${Date.now()}`);
         
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -224,9 +271,13 @@ async function loadSongsFromSheet() {
             console.log(`ĐÃ TẢI ${songs.length} BÀI HÁT TỪ GOOGLE SHEET`);
             initPlayerAfterLoad();
             updateListenStatsModal();
-            showToastMsg(`ĐÃ TẢI ${songs.length} BÀI HÁT!`, false);
             
             startAutoRefresh(60);
+            
+            if (pendingPlayAfterLoad) {
+                pendingPlayAfterLoad = false;
+                startPlayback();
+            }
         } else {
             throw new Error("DỮ LIỆU KHÔNG ĐÚNG ĐỊNH DẠNG");
         }
@@ -236,6 +287,7 @@ async function loadSongsFromSheet() {
         showToastMsg("KHÔNG THỂ TẢI DỮ LIỆU!", false);
         songs = [];
         isLoadingSongs = false;
+        hidePlayerLoading();
     }
 }
 
@@ -261,6 +313,9 @@ function initPlayerAfterLoad() {
     if (hint) {
         hint.classList.remove('hide');
         hint.style.display = 'flex';
+        hint.style.opacity = '1';
+        hint.style.visibility = 'visible';
+        hint.style.pointerEvents = 'auto';
     }
     
     isShuffle = true;
@@ -855,26 +910,96 @@ function prevSong() {
     changeSong(prev, source);
 }
 
-function togglePlay() {
-    if (!hasUserInteracted) {
-        hasUserInteracted = true;
-        
-        if (hint) {
-            hint.classList.add('hide');
-            setTimeout(() => {
-                hint.style.display = 'none';
-            }, 600);
-        }
-        
-        const playerContainer = document.getElementById('player-container');
-        if (playerContainer) playerContainer.style.display = 'flex';
-        
-        if (songs[index] && (!audio.src || audio.src !== songs[index].audio)) {
+function startPlayback() {
+    const playerContainer = document.getElementById('player-container');
+    const hintEl = document.getElementById('interaction-hint');
+    
+    if (hintEl) {
+        hintEl.classList.add('hide');
+        hintEl.style.display = 'none';
+        hintEl.style.opacity = '0';
+        hintEl.style.visibility = 'hidden';
+        hintEl.style.pointerEvents = 'none';
+    }
+    
+    if (playerContainer) {
+        playerContainer.style.display = 'flex';
+        playerContainer.style.opacity = '0';
+        playerContainer.style.transform = 'translateY(15px)';
+        playerContainer.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+        void playerContainer.offsetHeight;
+        playerContainer.style.opacity = '1';
+        playerContainer.style.transform = 'translateY(0)';
+    }
+    
+    hidePlayerLoading();
+    
+    if (songs.length > 0 && songs[index]) {
+        if (!audio.src || audio.src !== songs[index].audio) {
             loadSong(index);
             setTimeout(() => {
                 audio.play().catch(e => console.log("LỖI PHÁT:", e));
             }, 100);
+        } else {
+            setTimeout(() => {
+                audio.play().catch(e => console.log("LỖI PHÁT:", e));
+            }, 100);
         }
+    }
+}
+
+let isHidingHint = false;
+
+function togglePlay() {
+    const hintEl = document.getElementById('interaction-hint');
+    
+    if (!hasUserInteracted) {
+        if (isHidingHint) return;
+        isHidingHint = true;
+        
+        if (hintEl) {
+            hintEl.classList.add('hide');
+            hintEl.style.display = 'none';
+            hintEl.style.opacity = '0';
+            hintEl.style.visibility = 'hidden';
+            hintEl.style.pointerEvents = 'none';
+        }
+        
+        showPlayerLoading();
+        
+        const playerContainer = document.getElementById('player-container');
+        if (playerContainer) {
+            playerContainer.style.display = 'flex';
+            playerContainer.style.opacity = '0';
+            playerContainer.style.transform = 'translateY(15px)';
+            playerContainer.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+            void playerContainer.offsetHeight;
+            playerContainer.style.opacity = '1';
+            playerContainer.style.transform = 'translateY(0)';
+        }
+        
+        hasUserInteracted = true;
+        
+        if (songs.length > 0 && !isLoadingSongs) {
+            hidePlayerLoading();
+            if (songs[index] && (!audio.src || audio.src !== songs[index].audio)) {
+                loadSong(index);
+                setTimeout(() => audio.play().catch(e => console.log("LỖI PHÁT:", e)), 100);
+            } else if (songs[index]) {
+                setTimeout(() => audio.play().catch(e => console.log("LỖI PHÁT:", e)), 100);
+            }
+        } else {
+            const loadingDiv = document.getElementById('player-loading');
+            if (loadingDiv) {
+                loadingDiv.innerHTML = `
+                    <div style="width: 50px; height: 50px; border: 3px solid rgba(0,0,0,0.1); border-top: 3px solid var(--accent-color); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 15px;"></div>
+                    <div style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: var(--text-secondary);">ĐANG TẢI DỮ LIỆU...</div>
+                `;
+            }
+            pendingPlayAfterLoad = true;
+        }
+        
+        isHidingHint = false;
         return;
     }
     
@@ -888,6 +1013,7 @@ function togglePlay() {
 audio.onerror = () => {
     if (!songs[index]) return;
     showNotification('LỖI:', 'KHÔNG THỂ PHÁT BÀI HÁT!', '#ff4444', 'fa-circle-exclamation');
+    hidePlayerLoading();
 };
 
 const progressArea = document.getElementById('progress-area');
@@ -1005,6 +1131,7 @@ audio.onplay = () => {
     if (art) art.style.animationPlayState = 'running';
     requestWakeLock();
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = "playing";
+    hidePlayerLoading();
 };
 
 audio.onpause = () => {
@@ -1048,20 +1175,11 @@ const playerContainer = document.getElementById('player-container');
 if (playerContainer) playerContainer.style.display = 'none';
 
 if (hint) {
-    hint.onclick = () => {
-        hasUserInteracted = true;
-        hint.classList.add('hide');
-        setTimeout(() => {
-            hint.style.display = 'none';
-            if (playerContainer) playerContainer.style.display = 'flex';
-        }, 600);
-        
-        if (songs.length > 0 && songs[index]) {
-            loadSong(index);
-            setTimeout(() => {
-                audio.play().catch(e => console.log("LỖI PHÁT:", e));
-            }, 100);
-        }
+    const newHint = hint.cloneNode(true);
+    hint.parentNode.replaceChild(newHint, hint);
+    newHint.onclick = function(e) {
+        e.stopPropagation();
+        togglePlay();
     };
 }
 
